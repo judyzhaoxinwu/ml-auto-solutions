@@ -23,6 +23,7 @@ from typing import Optional, Tuple, Union
 import airflow
 from airflow.models.taskmixin import DAGNode
 from airflow.utils.task_group import TaskGroup
+from airflow.operators.bash import BashOperator
 from xlml.apis import gcp_config, metric_config, test_config
 from xlml.utils import gpu, metric, name_format, ssh, tpu, xpk, gke
 
@@ -292,6 +293,7 @@ class XpkTask(BaseTask):
         )
     return group
 
+##for XPKTask
   def run_model(
       self,
       gcs_location: Optional[airflow.XComArg] = None,
@@ -329,6 +331,7 @@ class XpkTask(BaseTask):
           mtc_enabled,
           xpk_branch,
       )
+
       wait_for_workload_completion = xpk.wait_for_workload_completion.override(
           timeout=int(self.task_test_config.timeout.total_seconds()),
       )(
@@ -348,10 +351,11 @@ class XpkTask(BaseTask):
       (
           (workload_id, gcs_path)
           >> launch_workload
-          >> wait_for_workload_completion
+          >> (wait_for_workload_completion)
           >> clean_up_workload
       )
       return group, gcs_path
+
 
   def launch_workload(
       self,

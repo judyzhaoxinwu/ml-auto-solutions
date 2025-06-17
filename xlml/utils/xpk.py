@@ -17,11 +17,14 @@
 import os
 import tempfile
 import uuid
+import time
 from absl import logging
 from airflow.decorators import task
 from airflow.exceptions import AirflowFailException
 from airflow.hooks.subprocess import SubprocessHook
 from kubernetes import client as k8s_client
+from airflow.operators.bash import BashOperator
+
 from xlml.apis import metric_config
 from xlml.utils import gke
 from dags.common.vm_resource import GpuVersion
@@ -126,6 +129,7 @@ def run_workload(
       xpk_branch = "v0.4.1"
 
     cmds = get_xpk_setup_cmd(tmpdir, xpk_branch)
+
     if accelerator_type == GpuVersion.XPK_H100_MEGA.value:
       workload_create_cmd += " --scheduler=gke.io/topology-aware-auto"
     if use_vertex_tensorboard:
@@ -134,7 +138,9 @@ def run_workload(
           "pip install -U google-cloud-aiplatform cloud-accelerator-diagnostics"
       )
       cmds.append(vertex_ai_dependency)
+
     cmds.append(workload_create_cmd)
+
     hook = SubprocessHook()
     result = hook.run_command(
         ["bash", "-c", ";".join(cmds)],
@@ -283,6 +289,23 @@ def wait_for_workload_completion(
   logging.info("All pod(s) phase are succeeded.")
   return True
 
+@task.sensor(poke_interval=60, timeout=600, mode="reschedule")
+def monitor_workload_pod(
+    workload_id: str,
+) -> bool:
+    workload_create_cmd = (
+        f"echo $(kubectl get pods --selector=jobset.sigs.k8s.io/jobset-name={workload_id} -n default -o name); kubectl logs $(kubectl get pods --selector=jobset.sigs.k8s.io/jobset-name={workload_id} -n default -o name) -f -n default;"
+    )
+    hook = SubprocessHook()
+    result = hook.run_command(
+        ["bash", "-c", workload_create_cmd],
+    )
+    print(result.stdout)
+    return True
+    # assert (
+    #     result.exit_code == 0
+    # ), f"XPK monitor workload failed with code {result.exit_code}"
+
 
 @task(trigger_rule="all_done")
 def clean_up_workload(
@@ -294,6 +317,7 @@ def clean_up_workload(
 ) -> bool:
   """Delete workload."""
   with tempfile.TemporaryDirectory() as tmpdir:
+    time.sleep(300)
     workload_delete_cmd = (
         f"python {tmpdir}/xpk/xpk.py workload delete"
         f" --cluster={cluster_name} --workload={workload_id}"

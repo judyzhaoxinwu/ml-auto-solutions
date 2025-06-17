@@ -121,6 +121,8 @@ class Zone(enum.Enum):
   US_WEST4_B = "us-west4-b"
   # reserved v5e in cloud-tpu-inference-test
   US_WEST1_C = "us-west1-c"
+
+  US_WEST1_B = "us-west1-b"
   # reserved a3+ cluster in supercomputer-testing
   AUSTRALIA_SOUTHEAST1_C = "australia-southeast1-c"
   # reserved H200 capacity in cloud-tpu-inference-test
@@ -142,6 +144,7 @@ class MachineVersion(enum.Enum):
   N1_STANDARD_16 = "n1-standard-16"  # 60GB memory
   N1_STANDARD_32 = "n1-standard-32"
   A2_HIGHGPU_1G = "a2-highgpu-1g"
+  A2_HIGHGPU_2G = "a2-highgpu-2g"
   A2_HIGHGPU_4G = "a2-highgpu-4g"
   A2_ULTRAGPU_1G = "a2-ultragpu-1g"
   A2_ULTRAGPU_2G = "a2-ultragpu-2g"
