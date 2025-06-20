@@ -132,6 +132,7 @@ class Zone(enum.Enum):
   SOUTHAMERICA_WEST1_A = "southamerica-west1-a"
   # reserved v5e capacity in tpu-prod-env-multipod
   EUROPE_WEST4_B = "europe-west4-b"
+  EUROPE_WEST4_C = "europe-west4-c"
   # reserved l4 in cloud-tpu-inference-test
   ASIA_EAST1_A = "asia-east1-a"
   ASIA_EAST1_C = "asia-east1-c"

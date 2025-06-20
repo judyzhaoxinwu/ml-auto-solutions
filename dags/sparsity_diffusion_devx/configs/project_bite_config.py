@@ -83,6 +83,62 @@ def get_bite_tpu_config(
       task_gcp_config=job_gcp_config,
   )
 
+##for TPU unit test with pre-built docker images
+def get_bite_tpu_unit_test_config(
+    test_name: str,
+    cluster: XpkClusterConfig,
+    docker_image: str,
+    time_out_in_min: int,
+    num_slices: int=1,
+)-> task.XpkTask:
+  # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
+  unittest_runcmds = (
+      'echo "#### Start docker image - cpu_unittests"',
+      "mkdir -p test-results",
+      "export JAX_ENABLE_X64=True",
+      "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+      'pytest --no-header -v -m "tpu or for_8_devices" --dist worksteal '
+      "--csv=test-results/bite_axlearn_unit_test_tpu_jax_0_5_3_results.csv "
+      "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
+      "--ignore axlearn/common/inference_test.py "
+      "--ignore axlearn/common/flash_attention/utils_test.pym "
+      "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
+      "TESTS_EXIT_CODE=\\$? && "
+      'echo "#### TPU JAX Tests finished." && '
+      'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
+      'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
+      "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
+      "gcloud storage cp -R test-results/*.csv gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/ && "
+      'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
+      "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+  )
+
+  job_gcp_config = gcp_config.GCPConfig(
+      project_name=cluster.project,
+      zone=cluster.zone,
+      dataset_name=metric_config.DatasetOption.XLML_DATASET,
+  )
+
+  tpu_unit_test_config = test_config.TpuGkeTest(
+      test_config.Tpu(
+          version=cluster.device_version,
+          cores=cluster.core_count,
+      ),
+      test_name=test_name,
+      cluster_name=cluster.name,
+      docker_image=docker_image,
+      set_up_cmds=None,
+      run_model_cmds=unittest_runcmds,
+      timeout=datetime.timedelta(minutes=time_out_in_min),
+      task_owner=test_owner.Judy_W,
+      num_slices=num_slices,
+  )
+  return task.XpkTask(
+      task_test_config=tpu_unit_test_config,
+      task_gcp_config=job_gcp_config,
+  )
+
+##for the previous TPU unit test confi  g with dynamic built Docker image
 def get_bite_tpu_unittests_config(
     tpu_version: TpuVersion,
     tpu_cores: int,
@@ -202,7 +258,7 @@ def get_bite_cpu_unittests_config(
 
   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
   unittest_runcmds = (
-      # "echo '#### Start docker image - cpu_unittests'",
+      'echo "#### Start docker image - cpu_unittests"',
       "mkdir -p test-results",
       "export JAX_ENABLE_X64=True",
       "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
@@ -212,10 +268,7 @@ def get_bite_cpu_unittests_config(
       "--ignore axlearn/common/inference_test.py "
       "--ignore axlearn/common/flash_attention/utils_test.pym "
       "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
-      # cmd_config.pytest_env_setup_cmd(platform="cpu", jax_version=jax_version, accelerator_type="none", pytest_cmds=pytest_cmds),
       "TESTS_EXIT_CODE=\\$? && "
-      # "sudo chown -R \\$\\(whoami):\\$(whoami) test-results",
-      # "docker run --network=host --privileged --ulimit memlock=-1:-1 -v \\${PWD}:/tmp_docker ml-auto-solutions/tpu_unittests  /bin/bash -c '/workspace/run_cpu_tests.sh' 2>&1 | tee test-results/tests_std_out_err.log",
       'echo "#### TPU JAX Tests finished." && '
       'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
       'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
@@ -247,6 +300,70 @@ def get_bite_cpu_unittests_config(
       task_gcp_config=job_gcp_config,
   )
 
+##could not get it working with existing GPU clusters
+# def get_bite_gpu_unit_test_config(
+#     test_name: str,
+#     cluster: XpkClusterConfig,
+#     docker_image: str,
+#     time_out_in_min: int,
+#     num_slices: int=1,
+# ) -> task.XpkTask:
+
+#   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
+#   unittest_runcmds = (
+#       'echo "#### Start docker image - cpu_unittests"',
+#       "mkdir -p test-results",
+#       "export JAX_ENABLE_X64=True",
+#       "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+#       'pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" --test-group-count 50 --test-group 1 --dist worksteal '
+#       "--csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv "
+#       "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
+#       "--ignore axlearn/common/inference_test.py "
+#       "--ignore axlearn/common/flash_attention/utils_test.pym "
+#       "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
+#       "TESTS_EXIT_CODE=\\$? && "
+#       'echo "#### TPU JAX Tests finished." && '
+#       'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
+#       'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
+#       "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
+#       "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests && "
+#       'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
+#       "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+#   )
+
+#   job_gcp_config = gcp_config.GCPConfig(
+#       project_name=cluster.project,
+#       zone=cluster.zone,
+#       dataset_name=metric_config.DatasetOption.XLML_DATASET,
+#   )
+
+#   # test_name = f"bite_gpu_unittest_{jax_version.replace('.','-') if jax_version else 'main'}"
+
+#   gpu_unittests_test_config = test_config.GpuXpkTest(
+#       test_config.Gpu(
+#           machine_type=None,
+#           image_family=None,
+#           count=None,
+#           accelerator_type=cluster.device_version.value,
+#           runtime_version=None,
+#       ),
+#       test_name=test_name,
+#       set_up_cmds=None,
+#       run_model_cmds=unittest_runcmds,
+#       timeout=datetime.timedelta(minutes=time_out_in_min),
+#       task_owner=test_owner.Judy_W,
+#       cluster_name=cluster.name,
+#       docker_image=docker_image,
+#       num_slices=num_slices,
+#   )
+
+#   return task.XpkTask(
+#       task_test_config=gpu_unittests_test_config,
+#       task_gcp_config=job_gcp_config,
+#   )
+
+
+
 def get_bite_gpu_unittests_config(
     machine_type: str,
     image_family: str,
@@ -261,20 +378,52 @@ def get_bite_gpu_unittests_config(
     project_name: Optional[Project] = Project.CLOUD_ML_AUTO_SOLUTIONS.value,
 ) -> task.GpuCreateResourceTask:
 
-  pytest_cmds=("""pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" \
-    --test-group-count 50 --test-group 1 --dist worksteal \
-    --ignore axlearn/common/inference_test.py \
-    --ignore axlearn/common/flash_attention/utils_test.py \
-    --ignore axlearn/common/flash_attention/neuron_attention_test.py""")
+  pytest_cmds=(
+    """cd axlearn
+export JAX_ENABLE_X64=True
+pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" \
+--test-group-count 50 --test-group 1 --dist worksteal \
+--csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv \
+--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version \
+--ignore axlearn/common/inference_test.py \
+--ignore axlearn/common/flash_attention/utils_test.py \
+--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && \
+TESTS_EXIT_CODE=\\$?
+""")
+
+# unittest_runcmds = (
+#       'echo "#### Start docker image - cpu_unittests"',
+#       "mkdir -p test-results",
+#       "export JAX_ENABLE_X64=True",
+#       "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+#       'pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" --test-group-count 50 --test-group 1 --dist worksteal '
+#       "--csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv "
+#       "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
+#       "--ignore axlearn/common/inference_test.py "
+#       "--ignore axlearn/common/flash_attention/utils_test.pym "
+#       "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
+#       "TESTS_EXIT_CODE=\\$? && "
+#       'echo "#### TPU JAX Tests finished." && '
+#       'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
+#       'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
+#       "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
+#       "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests && "
+#       'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
+#       "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+#   )
+
 
   unittest_setupcmds = (
       # create configuration files needed
       cmd_config.dockerfile_build_gpu_cmd(),
       "nvidia-smi",
       cmd_config.pytest_env_setup_cmd(platform="gpu", jax_version=jax_version, accelerator_type=accelerator_type, pytest_cmds=pytest_cmds),
-      # create script to run the tests inside of the container
-      # incluedes a basic sanity check python script which prints out TPU env info for reference
-      # Save the tests exit code to a file which will be mapped to the local directory
+      'echo "Test exit code is \\${TESTS_EXIT_CODE}"',
+      'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt',
+      "cp -av /workspace/axlearn/test-results /tmp_docker/",
+      "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+      'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)"',
+      "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi",
       "chmod +x run_gpu_tests.sh",
       "cat Dockerfile_CI",
       "cat run_gpu_tests.sh",
@@ -282,17 +431,16 @@ def get_bite_gpu_unittests_config(
   )
 
   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
-  unittest_runcmds = ("""echo "#### Start docker image - gpu_unittests";
-                      mkdir -p test-results;
-                      sudo chown -R $(whoami):$(whoami) test-results;
-                      sudo docker run --gpus all --shm-size="8g" --network=host --privileged --ulimit memlock=-1:-1 -v ${PWD}:/tmp_docker ml-auto-solutions/gpu_unittests  /bin/bash -c "/workspace/run_gpu_tests.sh" 2>&1 | tee test-results/tests_std_out_err.log;
-                      sudo docker logs $( sudo docker ps --latest --quiet ) > test-results/docker_log.log;"""
-                      +
-                      f"""echo {metric_config.SshEnvVars.GCS_OUTPUT.value}axlearn-test-results;
-                      gcloud storage cp -R test-results {metric_config.SshEnvVars.GCS_OUTPUT.value}axlearn-test-results;"""
-                      +
-                      """echo "Tests exit code: $(cat test-results/tests_exit_code.txt)";
-                      if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi;""")
+  unittest_runcmds = (
+    'echo "#### Start docker image - gpu_unittests"',
+    "mkdir -p test-results",
+    "sudo chown -R $(whoami):$(whoami) test-results",
+    'sudo docker run --gpus all --shm-size="8g" --network=host --privileged --ulimit memlock=-1:-1 -v ${PWD}:/tmp_docker ml-auto-solutions/gpu_unittests  /bin/bash -c "/workspace/run_gpu_tests.sh" 2>&1 | tee test-results/tests_std_out_err.log',
+    "sudo docker logs $( sudo docker ps --latest --quiet ) > test-results/docker_log.log",
+    # "gcloud storage cp -R test-results/*.csv {metric_config.SshEnvVars.GCS_OUTPUT.value}axlearn-test-results/test-results",
+    # "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+    )
+
   job_gcp_config = gcp_config.GCPConfig(
       project_name=project_name,
       zone=gpu_zone,
@@ -316,10 +464,7 @@ def get_bite_gpu_unittests_config(
       test_name=test_name,
       set_up_cmds=unittest_setupcmds,
       run_model_cmds=unittest_runcmds,
-      timeout=datetime.timedelta(minutes=120),
-      use_existing_instance=False,
-      task_owner=test_owner.Judy_W,
-      gcs_subfolder=f"{GCS_SUBFOLDER_PREFIX}/bite_unit_test_gpu"
+      use_existing_instance=True,
   )
   return task.GpuCreateResourceTask(
       image_family=image_family,
@@ -327,6 +472,8 @@ def get_bite_gpu_unittests_config(
       task_test_config=gpu_unittests_test_config,
       task_gcp_config=job_gcp_config,
       install_nvidia_drivers=True,
+      existing_instance_name="judyzwu-gpu-test",
+      reservation=True
   )
 
 
