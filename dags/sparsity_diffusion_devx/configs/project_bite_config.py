@@ -262,8 +262,9 @@ def get_bite_cpu_unittests_config(
       "mkdir -p test-results",
       "export JAX_ENABLE_X64=True",
       "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
-      'pytest --no-header -v -m "high_cpu" --dist worksteal '
-      "--csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv "
+      'pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" --dist worksteal '
+      "--test-group-count 15 --test-group 15 "
+      "--csv=test-results/bite_axlearn_unit_test_cpu_15_of_15_jax_0_5_3_results.csv "
       "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
       "--ignore axlearn/common/inference_test.py "
       "--ignore axlearn/common/flash_attention/utils_test.pym "
@@ -378,18 +379,16 @@ def get_bite_gpu_unittests_config(
     project_name: Optional[Project] = Project.CLOUD_ML_AUTO_SOLUTIONS.value,
 ) -> task.GpuCreateResourceTask:
 
-  pytest_cmds=(
-    """cd axlearn
-export JAX_ENABLE_X64=True
-pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" \
---test-group-count 50 --test-group 1 --dist worksteal \
---csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv \
---csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version \
---ignore axlearn/common/inference_test.py \
---ignore axlearn/common/flash_attention/utils_test.py \
---ignore axlearn/common/flash_attention/neuron_attention_test.py || true && \
-TESTS_EXIT_CODE=\\$?
-""")
+#   pytest_cmds=(
+#     """pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" \
+# --test-group-count 50 --test-group 1 --dist worksteal \
+# --csv=test-results/bite_axlearn_unit_test_cpu_high_cpu_jax_0_5_3_results.csv \
+# --csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version \
+# --ignore axlearn/common/inference_test.py \
+# --ignore axlearn/common/flash_attention/utils_test.py \
+# --ignore axlearn/common/flash_attention/neuron_attention_test.py || true && \
+# TESTS_EXIT_CODE=\\$?
+# """)
 
 # unittest_runcmds = (
 #       'echo "#### Start docker image - cpu_unittests"',
@@ -413,33 +412,96 @@ TESTS_EXIT_CODE=\\$?
 #   )
 
 
-  unittest_setupcmds = (
-      # create configuration files needed
-      cmd_config.dockerfile_build_gpu_cmd(),
-      "nvidia-smi",
-      cmd_config.pytest_env_setup_cmd(platform="gpu", jax_version=jax_version, accelerator_type=accelerator_type, pytest_cmds=pytest_cmds),
-      'echo "Test exit code is \\${TESTS_EXIT_CODE}"',
-      'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt',
-      "cp -av /workspace/axlearn/test-results /tmp_docker/",
-      "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
-      'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)"',
-      "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi",
-      "chmod +x run_gpu_tests.sh",
-      "cat Dockerfile_CI",
-      "cat run_gpu_tests.sh",
-      "sudo docker build -f Dockerfile_CI -t ml-auto-solutions/gpu_unittests .",
-  )
+  # unittest_setupcmds = (
+  #     # create configuration files needed
+  #     # cmd_config.dockerfile_build_gpu_cmd(),
+  #     "nvidia-smi",
+  #     cmd_config.pytest_env_setup_cmd(platform="gpu", jax_version=jax_version, accelerator_type=accelerator_type, pytest_cmds=pytest_cmds),
+  #     "chmod +x run_gpu_tests.sh",
+  #     "cat Dockerfile_CI",
+  #     "cat run_gpu_tests.sh",
+  #     "sudo docker build -f Dockerfile_CI -t ml-auto-solutions/gpu_unittests .",
+  # )
 
   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
+  # pytest_cmds = ('pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" '
+  #   '--test-group-count 50 --test-group 1 --dist worksteal '
+  #   '--csv=test-results/bite_axlearn_unit_test_gpu_group_1_50_jax_0_5_3_results.csv '
+  #   '--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version '
+  #   '--ignore axlearn/common/inference_test.py '
+  #   '--ignore axlearn/common/flash_attention/utils_test.py '
+  #   '--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && '
+  #   'TESTS_EXIT_CODE=\\$?;')
+
+  # unittest_runcmds = (
+  #   'echo "#### Start docker image - gpu_unittests"',
+  #   'nvidia-smi',
+  #   'python -c "import jax; jax.print_environment_info() ; print("Global device count: %s", jax.device_count());',
+  #   pytest_cmds,
+  #   'echo "#### {platform.upper()} JAX Tests finished."',
+  #   'echo "Test exit code is \\${TESTS_EXIT_CODE}"',
+  #   'echo "\\${TESTS_EXIT_CODE}" > axlearn/test-results/tests_exit_code.txt',
+  #   "gcloud storage cp -R test-results/*.csv gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/",
+  #   "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi",
+  #   )
+  # pytest_cmd_string = (
+  #   'pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" '
+  #   '--test-group-count 50 --test-group 1 --dist worksteal '
+  #   '--csv=test-results/bite_axlearn_unit_test_gpu_group_1_50_jax_0_5_3_results.csv '
+  #   '--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version '
+  #   '--ignore axlearn/common/inference_test.py '
+  #   '--ignore axlearn/common/flash_attention/utils_test.py '
+  #   '--ignore axlearn/common/flash_attention/neuron_attention_test.py'
+  # )
+
   unittest_runcmds = (
-    'echo "#### Start docker image - gpu_unittests"',
-    "mkdir -p test-results",
-    "sudo chown -R $(whoami):$(whoami) test-results",
-    'sudo docker run --gpus all --shm-size="8g" --network=host --privileged --ulimit memlock=-1:-1 -v ${PWD}:/tmp_docker ml-auto-solutions/gpu_unittests  /bin/bash -c "/workspace/run_gpu_tests.sh" 2>&1 | tee test-results/tests_std_out_err.log',
-    "sudo docker logs $( sudo docker ps --latest --quiet ) > test-results/docker_log.log",
-    # "gcloud storage cp -R test-results/*.csv {metric_config.SshEnvVars.GCS_OUTPUT.value}axlearn-test-results/test-results",
-    # "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
-    )
+      # 'echo "#### Start docker image - gpu_unittests"',
+# Add the user to the docker group (good practice for future interactive sessions, but won't affect this script)
+# The -N flag prevents sudo from asking for a password if the user is in sudoers
+      # "sudo -N usermod -aG docker ${USER} || true",
+# Configure Docker to authenticate with Artifact Registry
+# This command affects the user's home directory, so it's fine without sudo
+      # "gcloud auth configure-docker us-docker.pkg.dev --quiet",
+# Pull the docker image using sudo
+      # "sudo docker pull us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-gpu-a3-h100-0.5.3:latest",
+# Run the docker container using sudo
+      # "nvidia-smi",
+      # "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+      #   && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+      #   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+      #   sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list",
+      # "sudo apt-get update",
+      # "sudo apt-get install -y nvidia-container-toolkit",
+      # "sudo nvidia-ctk runtime configure --runtime=docker",
+      # "sudo systemctl restart docker",
+      # "sudo docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi",
+      # "docker run -it --rm --gpus all --entrypoint /bin/bash us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-gpu-a3-h100-0.5.3:latest",
+      # "ls -l /workspace/axlearn/run_gpu_tests.sh",
+      # "whoami",
+      # "head -n 1 /workspace/axlearn/run_gpu_tests.sh",
+      # "ls -l /bin/bash",
+      "sudo docker run --rm --gpus all -m 40g -e GROUP_NUM=1 -e GROUP_DIVISION=300 us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-gpu-a3-h100-0.5.3:latest",
+      'echo "#### JAX Tests finished."'
+  )
+
+  setup_cmds = (
+      'echo "#### Start docker image - gpu_unittests"',
+      'nvidia-smi',
+      # "sudo rm /etc/apt/sources.list.d/docker.list",
+      # 'sudo apt-get update',
+      # "sudo apt-get install -y ca-certificates curl gnupg",
+      # "sudo install -m 0755 -d /etc/apt/keyrings",
+      # "sudo rm /etc/apt/sources.list.d/docker.list",
+      "sudo rm /etc/apt/keyrings/docker.gpg",
+      "sudo apt-get update",
+      "sudo apt-get install -y ca-certificates curl",
+      "sudo install -m 0755 -d /etc/apt/keyrings",
+      "curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+      "sudo chmod a+r /etc/apt/keyrings/docker.gpg",
+      'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null',
+      "sudo apt-get update",
+      "sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+      "sudo docker run hello-world")
 
   job_gcp_config = gcp_config.GCPConfig(
       project_name=project_name,
@@ -462,7 +524,7 @@ TESTS_EXIT_CODE=\\$?
           disk_size_gb=100,
       ),
       test_name=test_name,
-      set_up_cmds=unittest_setupcmds,
+      set_up_cmds=None,
       run_model_cmds=unittest_runcmds,
       use_existing_instance=True,
   )
@@ -471,9 +533,9 @@ TESTS_EXIT_CODE=\\$?
       image_project=ImageProject.DEEP_LEARNING_PLATFORM_RELEASE.value,
       task_test_config=gpu_unittests_test_config,
       task_gcp_config=job_gcp_config,
-      install_nvidia_drivers=True,
-      existing_instance_name="judyzwu-gpu-test",
-      reservation=True
+      # install_nvidia_drivers=True,
+      existing_instance_name="judyzwu-gpu-test-with-disk",
+      # reservation=True
   )
 
 
@@ -531,4 +593,3 @@ TESTS_EXIT_CODE=\\$?
 #       task_test_config=gpu_unittests_test_config,
 #       task_gcp_config=job_gcp_config,
 #   )
-

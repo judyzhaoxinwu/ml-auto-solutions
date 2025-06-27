@@ -16,8 +16,9 @@ PROJECT_ID = "cloud-ml-auto-solutions"
 LOCATION = "US" # Data Transfer Service location (often matches dataset location)
 DESTINATION_DATASET_ID = "xlml_bite_testresults"
 DISPLAY_NAME = "Axlearn unit test result GCS to BigQuery Transfer"
-GCS_BUCKET_SOURCE = "gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/*.csv" # Source path in GCS
+GCS_BUCKET_SOURCE = "gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/separate_files_testing/*.csv" # Source path in GCS
 DESTINATION_TABLE_NAME = "axlearn_unit_test_results"
+DESTINATION_TABLE_NAME_TEST ="axlearn_unit_test_results_test"
 
 PYTHON_TABLE_SCHEMA = [
     {"name": "id", "type": "STRING", "mode": "NULLABLE"},
@@ -47,43 +48,44 @@ with models.DAG(
     tags=["bigquery", "dts", "data_transfer"],
 ) as dag:
 
-    create_transfer_config = BigQueryCreateDataTransferOperator( ##
-        task_id="create_gcs_to_bq_transfer_config",
-        project_id=PROJECT_ID,
-        location=LOCATION,
-        transfer_config={
-            "destination_dataset_id": DESTINATION_DATASET_ID,
-            "display_name": DISPLAY_NAME,
-            "data_source_id": "google_cloud_storage", # Source type
-            "schedule_options": {"disable_auto_scheduling": False},
-            "params": {
-                "data_path_template": f"{GCS_BUCKET_SOURCE}", # Use wildcard for files
-                "destination_table_name_template": DESTINATION_TABLE_NAME,
-                "file_format": "CSV",
-                "skip_leading_rows": "1", # If CSV has headers
-                "field_delimiter": ",",
-            },
-            "schedule": "every 3 hours",
-            "disabled": False,
-        },
-        gcp_conn_id="google_cloud_default",
-    )
+    # create_transfer_config = BigQueryCreateDataTransferOperator( ##
+    #     task_id="create_gcs_to_bq_transfer_config",
+    #     project_id=PROJECT_ID,
+    #     location=LOCATION,
+    #     transfer_config={
+    #         "destination_dataset_id": DESTINATION_DATASET_ID,
+    #         "display_name": DISPLAY_NAME,
+    #         "data_source_id": "google_cloud_storage", # Source type
+    #         "schedule_options": {"disable_auto_scheduling": False},
+    #         "params": {
+    #             "data_path_template": f"{GCS_BUCKET_SOURCE}", # Use wildcard for files
+    #             "destination_table_name_template": DESTINATION_TABLE_NAME_TEST,
+    #             "file_format": "CSV",
+    #             "skip_leading_rows": "1", # If CSV has headers
+    #             "field_delimiter": ",",
+    #             # "schema": JSON_TABLE_SCHEMA_STRING,
+    #         },
+    #         "schedule": "every 30 minutes",
+    #         "disabled": False,
+    #     },
+    #     gcp_conn_id="google_cloud_default",
+    # )
 
-    delete_transfer_config = BigQueryDeleteDataTransferConfigOperator(
-        task_id='delete_dts_config',
-        transfer_config_id="6884eb0d-0000-2021-80e7-582429a9f21c", ##"6884eb0d-0000-2021-80e7-582429a9f21c", ##"687f306c-0000-207b-ab7b-582429a8d768",###'687ceda3-0000-2656-befb-582429a80b94', ##687f306c-0000-207b-ab7b-582429a8d768 # Replace with the actual ID
-        project_id=PROJECT_ID,  # Replace with your GCP project ID
-        # Optional: Specify region if your transfer config is regionalized
-        # location_id='your_location',
-    )
+    # delete_transfer_config = BigQueryDeleteDataTransferConfigOperator(
+    #     task_id='delete_dts_config',
+    #     transfer_config_id="6867abac-0000-2962-a962-883d24f6893c", ##"686b65ed-0000-279d-bfda-14c14eeacf54", ## "68523cee-0000-2323-b23a-c82add78aa60",##"6884eb0d-0000-2021-80e7-582429a9f21c", ##"6884eb0d-0000-2021-80e7-582429a9f21c", ##"687f306c-0000-207b-ab7b-582429a8d768",###'687ceda3-0000-2656-befb-582429a80b94', ##687f306c-0000-207b-ab7b-582429a8d768 # Replace with the actual ID
+    #     project_id=PROJECT_ID,  # Replace with your GCP project ID
+    #     # Optional: Specify region if your transfer config is regionalized
+    #     # location_id='your_location',
+    # )
 
     ##Run to manually trigger the data transfer
     start_transfer_run = BigQueryDataTransferServiceStartTransferRunsOperator(
         task_id="start_manual_transfer_run",
         project_id=PROJECT_ID,
         location=LOCATION,
-        # transfer_config_id="68780005-0000-2d2e-812f-582429ad9dec",
-        transfer_config_id="{{ task_instance.xcom_pull('create_gcs_to_bq_transfer_config', key='return_value')['name'].split('/')[-1] }}", # Get config ID from previous task
+        transfer_config_id="6862bc82-0000-2be6-b51c-14223bc3ff22",   ##"68523cee-0000-2323-b23a-c82add78aa60",##"68780005-0000-2d2e-812f-582429ad9dec",
+        # transfer_config_id="{{ task_instance.xcom_pull('create_gcs_to_bq_transfer_config', key='return_value')['name'].split('/')[-1] }}", # Get config ID from previous task
         # Define the time range for the transfer run (e.g., for data loaded since last run)
         requested_time_range={
         # Start time: A fixed point in the past (e.g., a known epoch or a very early date)
@@ -95,5 +97,6 @@ with models.DAG(
         gcp_conn_id="google_cloud_default",
     )
 
-    delete_transfer_config >> create_transfer_config >> start_transfer_run
+    # delete_transfer_config >> create_transfer_config >>
+    start_transfer_run
 
