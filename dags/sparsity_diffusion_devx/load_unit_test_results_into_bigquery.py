@@ -52,7 +52,7 @@ BIGQUERY_LOCATION = "US"  # The location for the BigQuery dataset
 with DAG(
     dag_id="unit_test_results_to_bigquery",
     start_date=datetime.datetime(2025, 7, 21),
-    schedule='0 */2 * * *',  # Set to None to trigger only when a file arrives
+    schedule='0 */6 * * *',  # Set to None to trigger only when a file arrives
     catchup=False,
     tags=["bigquery", "gcs", "testing"],
     # This makes the TEMP_EXTERNAL_TABLE variable available in the SQL
