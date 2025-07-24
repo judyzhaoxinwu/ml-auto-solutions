@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../../axlearn"
+		},
+		{
+			"path": "../../../ml-auto-solutions-tf"
+		}
+	],
+  "settings": {}
+}
