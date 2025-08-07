@@ -39,7 +39,7 @@ GCS_BUCKET = "axlearn-arc-testing"
 GCS_SOURCE_FOLDER = "testing/results/"
 # The folder to move files to after processing
 BIGQUERY_DATASET = "axlearn_arc_testing"
-BIGQUERY_FINAL_TABLE = "unit_test_results"
+BIGQUERY_FINAL_TABLE = "axlearn_test_results"
 # A unique name for the temporary table using the DAG's run_id
 TEMP_EXTERNAL_TABLE = "temp_external_test_runs_{{ ts_nodash }}"
 # TEMP_EXTERNAL_TABLE="temp_external_test_runs_20250722T162029"
@@ -47,12 +47,13 @@ TEMP_EXTERNAL_TABLE = "temp_external_test_runs_{{ ts_nodash }}"
 # The connection ID for the external GCS project, configured in the Airflow UI
 GCS_CONN_ID = "gcs_external_project_conn"
 BIGQUERY_LOCATION = "US"  # The location for the BigQuery dataset
+GITHUB_RUN_LINK="https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
 
 
 with DAG(
-    dag_id="unit_test_results_to_bigquery",
+    dag_id="training_and_unit_test_results_to_bigquery",
     start_date=datetime.datetime(2025, 7, 21),
-    schedule='0 */6 * * *',  # Set to None to trigger only when a file arrives
+    schedule="0 */8 * * *",  # Set to None to trigger only when a file arrives
     catchup=False,
     tags=["bigquery", "gcs", "testing"],
     # This makes the TEMP_EXTERNAL_TABLE variable available in the SQL
@@ -63,7 +64,7 @@ with DAG(
         task_id="list_csv_files",
         bucket=GCS_BUCKET,
         prefix=GCS_SOURCE_FOLDER,
-        match_glob="**/unit-tests-*.csv",  # This pattern finds only CSV files
+        match_glob=GCS_SOURCE_FOLDER + "*.csv",  # This pattern finds only CSV files
         gcp_conn_id=GCS_CONN_ID,
     )
 
@@ -97,7 +98,11 @@ with DAG(
         table_id=BIGQUERY_FINAL_TABLE,
         schema_fields=[
             {"name": "test_id", "type": "STRING", "mode": "REQUIRED"},
+            {"name": "test_type", "type": "STRING", "mode": "NULLABLE"},
             {"name": "processor", "type": "STRING", "mode": "NULLABLE"},
+            {"name": "accelerator", "type": "STRING", "mode": "NULLABLE"},
+            {"name": "jax_version", "type": "STRING", "mode": "NULLABLE"},
+            {"name": "github_run_id", "type": "STRING", "mode": "NULLABLE"},
             {"name": "commit_hash", "type": "STRING", "mode": "NULLABLE"},
             {"name": "run_timestamp", "type": "TIMESTAMP", "mode": "NULLABLE"},
             {"name": "test_path", "type": "STRING", "mode": "NULLABLE"},
@@ -150,14 +155,22 @@ with DAG(
             "query": {
                 "query": f"""
                   INSERT INTO `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_FINAL_TABLE}` (
-                      test_id, processor, commit_hash, run_timestamp,
-                      test_path, module, name, file, doc, markers,
+                      test_id, test_type, processor, accelerator, commit_hash, jax_version, github_run_id,
+                      run_timestamp, test_path, module, name, file, doc, markers,
                       status, message, duration
                   )
                   SELECT
                       GENERATE_UUID() AS test_id,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'unit-tests-([a-z]{{3}})-'), 'unknown') AS processor,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'unit-tests-[a-z]{{3}}-([a-zA-Z0-9]{{7}})-'), 'unknown_commit') AS commit_hash,
+                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'^([a-z]+-tests?)'), '') AS test_type,
+                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(cpu|gpu|tpu)-'), '') AS processor,
+                      CASE
+                        WHEN REGEXP_CONTAINS(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(cpu|gpu|tpu)-')
+                        THEN ''
+                        ELSE COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'test-(.*?)-[a-f0-9]{{7}}-\d\.\d\.\d-'), '')
+                      END AS accelerator,
+                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-([a-f0-9]{{7}})-\d\.\d\.\d-'), '') AS commit_hash,
+                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(\d\.\d\.\d)-'), '') AS jax_version,
+                      COALESCE(CONCAT('{GITHUB_RUN_LINK}', REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-\d\.\d\.\d-([0-9]+)-')), '') AS github_run_id,
                       PARSE_TIMESTAMP('%Y-%m-%d-%H:%M:%S', REPLACE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'(\\d{{4}}-\\d{{2}}-\\d{{2}}-\\d{{2}}[_:]\\d{{2}}[_:]\\d{{2}})'), '_', ':')) AS run_timestamp,
                       csv.id AS test_path,
                       csv.module,
