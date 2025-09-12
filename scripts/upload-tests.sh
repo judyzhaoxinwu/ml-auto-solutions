@@ -24,8 +24,8 @@ GCS_DAGS_FOLDER=$1 # e.g., gs://us-central1-judyzwu-dev-xxxx-bucket/dags
 # This assumes these specific subfolders exist locally.
 SUBFOLDERS_TO_INCLUDE=(
   "dags/common"
-  "dags/inference"
-  "dags/mlcompass"
+  "dags/framework3p"
+  # "dags/mlcompass"
   "dags/multipod"
   "dags/sparsity_diffusion_devx"
   "xlml/apis"

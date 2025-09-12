@@ -29,8 +29,9 @@ SCHEDULED_TIME = '0 18 * * *' if composer_env.is_prod_env() else None
 common = {
     'test_name': 'bite_tpu_unit_test-jax-0-5-3',
     'time_out_in_min': 60,
-    'cluster': XpkClusters.TPU_V5E_256_CLUSTER, ##Project.TPU_PROD_ENV_MULTIPOD
+    'cluster': XpkClusters.TPU_V5P_8_CLUSTER, ##Project.TPU_PROD_ENV_MULTIPOD
     'docker_image': "us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-tpu-v5e-0.5.3:latest",
+    # 'docker_image': "us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-tpu-0.6.2:latest",
     'num_slices': 1
 }
 

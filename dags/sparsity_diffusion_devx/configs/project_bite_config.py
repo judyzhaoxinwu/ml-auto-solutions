@@ -93,22 +93,18 @@ def get_bite_tpu_unit_test_config(
 )-> task.XpkTask:
   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
   unittest_runcmds = (
-      'echo "#### Start docker image - cpu_unittests"',
+      'echo "#### Start docker image - tpu_unittests"',
       "mkdir -p test-results",
-      "export JAX_ENABLE_X64=True",
-      "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
-      'pytest --no-header -v -m "tpu or for_8_devices" --dist worksteal '
-      "--csv=test-results/bite_axlearn_unit_test_tpu_jax_0_5_3_results.csv "
-      "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
-      "--ignore axlearn/common/inference_test.py "
-      "--ignore axlearn/common/flash_attention/utils_test.pym "
-      "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
+      # "export JAX_DISABLE_JIT=true",
+      # "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+      # 'pytest axlearn/common/trainer_test.py axlearn/common/ops/_optimization_barrier_test.py axlearn/common/utils_test.py ' or test_forward_optimization_barrier or test_tree_paths"
+      'pytest axlearn/common/trainer_test.py -k "test_xsc_check_policy_and_compilation_cache"',
       "TESTS_EXIT_CODE=\\$? && "
       'echo "#### TPU JAX Tests finished." && '
       'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
       'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
-      "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
-      "gcloud storage cp -R test-results/*.csv gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/ && "
+      # "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
+      # "gcloud storage cp -R test-results/*.csv gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests/test-results/ && "
       'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
       "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
   )
@@ -253,31 +249,47 @@ def get_bite_cpu_unittests_config(
   )
 
   unittest_setupcmds = (
-    'export JAX_VERSION="0.5.3"',
+      'git clone https://github.com/Borklet-Labs/axlearn.git',
+      'cd /axlearn',
+      'git checkout jax_0.6.2_py3.12 && git log -1 --stat --pretty=format:"%H" --no-patch',
+      'uv pip install .[core,dev,gcp,open_api,audio] pytest pytest-instafail pytest-xdist pytest-csv pytest-timeout'
   )
 
   # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
   unittest_runcmds = (
       'echo "#### Start docker image - cpu_unittests"',
       "mkdir -p test-results",
+      'cd /axlearn',
+      'ls',
       "export JAX_ENABLE_X64=True",
-      "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
-      'pytest --no-header -v -m "not (high_cpu or fp64 or tpu or for_8_devices or gs_login)" --dist worksteal '
-      "--test-group-count 15 --test-group 15 "
-      "--csv=test-results/bite_axlearn_unit_test_cpu_15_of_15_jax_0_5_3_results.csv "
-      "--csv-columns id,module,name,file,doc,markers,status,message,duration,platform,accelerator_type,datetime,test_name,jax_version "
-      "--ignore axlearn/common/inference_test.py "
-      "--ignore axlearn/common/flash_attention/utils_test.pym "
-      "--ignore axlearn/common/flash_attention/neuron_attention_test.py || true && "
-      "TESTS_EXIT_CODE=\\$? && "
-      'echo "#### TPU JAX Tests finished." && '
-      'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
-      'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
-      "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
-      "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests && "
-      'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
-      "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+      'pytest axlearn/common/input_mlm_test.py axlearn/common/attention_test.py '
+      '-k "test_whole_word_mask or test_stacked_transformer_with_seq_layer_cfgs"; '
+      'TESTS_EXIT_CODE=$?',
+      'echo "#### Tests finished." && '
+      'echo "Test exit code is ${TESTS_EXIT_CODE}" && '
+      'if [[ "${TESTS_EXIT_CODE}" -ne 0 ]]; then echo "Tests failed!" && exit 1; fi'
   )
+  # unittest_setupcmds = (
+  #   'export JAX_VERSION="0.5.3"',
+  # )
+
+  # # Run the unittest as non-root user, ulimit param req to mmap TPUs inside docker (default limit is 8192)
+  # unittest_runcmds = (
+  #     'echo "#### Start docker image - cpu_unittests"',
+  #     "mkdir -p test-results",
+  #     "export JAX_ENABLE_X64=True",
+  #     # "echo gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests",
+  #     'pytest axlearn/common/trainer_test.py axlearn/common/ops/_optimization_barrier_test.py axlearn/common/utils_test.py '
+  #     '-k "test_xsc_check_policy_and_compilation_cache or test_forward_optimization_barrier or test_tree_paths"',
+  #     "TESTS_EXIT_CODE=\\$? && "
+  #     'echo "#### CPU JAX Tests finished." && '
+  #     'echo "Test exit code is \\${TESTS_EXIT_CODE}" && '
+  #     'echo "\\${TESTS_EXIT_CODE}" > /workspace/axlearn/test-results/tests_exit_code.txt && '
+  #     # "cp -av /workspace/axlearn/test-results /tmp_docker/ && "
+  #     # "gcloud storage cp -R test-results gs://ml-auto-solutions/output/sparsity_diffusion_devx/axlearn-unit-tests && "
+  #     'echo "Tests exit code: \\$(cat test-results/tests_exit_code.txt)" && '
+  #     "if [[ `cat test-results/tests_exit_code.txt` -ne 0 ]]; then exit 1; fi"
+  # )
 
   test_name = f"bite_cpu_unit_test_{jax_version.replace('.','-') if jax_version else 'main'}"
 

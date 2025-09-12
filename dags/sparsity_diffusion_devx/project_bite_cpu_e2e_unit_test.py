@@ -19,7 +19,7 @@ from datetime import timedelta
 from airflow import models
 from dags import composer_env
 from dags.common import test_owner
-from dags.common.vm_resource import XpkClusters,DockerImage
+from dags.common.vm_resource import XpkClusters
 from dags.sparsity_diffusion_devx.configs import project_bite_config as config
 from airflow.utils.task_group import TaskGroup
 
@@ -30,7 +30,9 @@ SCHEDULED_TIME = '0 18 * * *' if composer_env.is_prod_env() else None
 common = {
     'time_out_in_min': 300,
     'task_owner': test_owner.Judy_W,
-    'docker_image': "us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-cpu-mega-0.5.3:latest",###"us-docker.pkg.dev/tpu-prod-env-multipod/bite/gpu/jax_nightly:2025-06-12",#DockerImage.AXLEARN_GPU_JAX_NIGHTLY.value,
+    'docker_image': "us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-cpu-mega-0.6.2:latest",
+    # 'docker_image': "us-docker.pkg.dev/tpu-prod-env-multipod/bite/axlearn-unit-test-cpu-mega-0.5.3:latest",
+    ###"us-docker.pkg.dev/tpu-prod-env-multipod/bite/gpu/jax_nightly:2025-06-12",#DockerImage.AXLEARN_GPU_JAX_NIGHTLY.value,"
     'num_slices':1,
     'cluster': XpkClusters.CPU_M1_MEGAMEM_96_CLUSTER,
 }
@@ -57,6 +59,6 @@ with models.DAG(
       group_id='bite_cpu_unit_tests', prefix_group_id=False
   ) as bite_unittests:
     config.get_bite_cpu_unittests_config(
-        jax_version='0.5.3',
+        jax_version='0.6.2',
         **common,
     ).run()
