@@ -1,21 +1,24 @@
 """
-DAG to process unit test result CSV files from GCS, enrich the data,
-and load it into a final BigQuery table.
+DAG to process unit test result CSV files from GCS, enrich the data with GCS
+metadata, and load it into a final BigQuery table.
 
-This DAG is designed with a robust ELT pattern:
-1.  Waits for a specific file to land in a GCS bucket in a different project.
-2.  Ensures the BigQuery Dataset and final table exist.
-3.  Creates a temporary external table pointing to the new file.
-4.  Runs a transform-and-load query to enrich data from the filename and
-    insert it into the final table.
-5.  Cleans up by deleting the temporary table and archiving the source file.
+This DAG uses a robust ELT pattern with dynamic task mapping:
+1.  Lists all new files in a GCS bucket.
+2.  For each file found, it dynamically spawns a series of tasks:
+    a. Fetches the GCS object's custom metadata.
+    b. Creates a temporary external table pointing to the file.
+    c. Runs a transform-and-load query to enrich data using the fetched
+       metadata and inserts it into the final table.
+    d. Cleans up by deleting the temporary table and the source file.
 """
 from __future__ import annotations
 
 import datetime
+import re
 
 from airflow.models.dag import DAG
 from airflow.decorators import task
+from airflow.providers.google.cloud.hooks.gcs import GCSHook
 
 from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryCreateEmptyDatasetOperator,
@@ -24,76 +27,59 @@ from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryDeleteTableOperator,
     BigQueryInsertJobOperator,
 )
-# from airflow.providers.google.cloud.operators.gcs_gcs import GCSMoveObjectOperator
-from airflow.providers.google.cloud.transfers.gcs_to_gcs import GCSToGCSOperator
-
-from airflow.providers.google.cloud.sensors.gcs import GCSObjectsWithPrefixExistenceSensor
-from airflow.providers.google.cloud.operators.gcs import GCSDeleteObjectsOperator, GCSListObjectsOperator
+from airflow.providers.google.cloud.operators.gcs import (
+    GCSDeleteObjectsOperator,
+    GCSListObjectsOperator,
+)
 
 
 # --- Configuration Variables ---
-# Replace with your actual project, bucket, and dataset names
-GCP_PROJECT_ID = "tpu-prod-env-one-vm" # The project where Composer and BigQuery live
+GCP_PROJECT_ID = "tpu-prod-env-one-vm"
 GCS_BUCKET = "axlearn-arc-testing"
-# The folder where new CSV files are dropped (no leading slash)
-GCS_SOURCE_FOLDER = "testing/results/"
-# The folder to move files to after processing
+GCS_SOURCE_FOLDER = "testing/results/"  ##change here for testing
 BIGQUERY_DATASET = "axlearn_arc_testing"
-BIGQUERY_FINAL_TABLE = "axlearn_test_results"
-# A unique name for the temporary table using the DAG's run_id
-TEMP_EXTERNAL_TABLE = "temp_external_test_runs_{{ ts_nodash }}"
-# TEMP_EXTERNAL_TABLE="temp_external_test_runs_20250722T162029"
-# The filename pattern to look for.
-# The connection ID for the external GCS project, configured in the Airflow UI
+BIGQUERY_FINAL_TABLE = "axlearn_test_results"  ##change here for testing
 GCS_CONN_ID = "gcs_external_project_conn"
-BIGQUERY_LOCATION = "US"  # The location for the BigQuery dataset
-GITHUB_RUN_LINK="https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
+BIGQUERY_LOCATION = "US"
+GITHUB_RUN_LINK_PREFIX = "https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
 
+# This variable is no longer used by the mapped tasks
+# TEMP_EXTERNAL_TABLE = "temp_external_test_runs_{{ ts_nodash }}"
 
 with DAG(
-    dag_id="training_and_unit_test_results_to_bigquery",
+    dag_id="gcs_metadata_to_bigquery_dynamic",
     start_date=datetime.datetime(2025, 7, 21),
-    schedule="0 */8 * * *",  # Set to None to trigger only when a file arrives
+    schedule="0 */8 * * *",
     catchup=False,
-    tags=["bigquery", "gcs", "testing"],
-    # This makes the TEMP_EXTERNAL_TABLE variable available in the SQL
-    user_defined_macros={"TEMP_EXTERNAL_TABLE": TEMP_EXTERNAL_TABLE},
+    tags=["bigquery", "gcs", "testing", "dynamic-tasks"],
+    render_template_as_native_obj=True,  # Important for passing lists
 ) as dag:
-    # Task 1: Wait for a new CSV file to appear in the source folder.
     list_csv_files = GCSListObjectsOperator(
         task_id="list_csv_files",
         bucket=GCS_BUCKET,
         prefix=GCS_SOURCE_FOLDER,
-        match_glob=GCS_SOURCE_FOLDER + "*.csv",  # This pattern finds only CSV files
+        match_glob=f"{GCS_SOURCE_FOLDER}*.csv",
         gcp_conn_id=GCS_CONN_ID,
     )
 
     @task.short_circuit
     def check_if_files_exist(files_found: list) -> bool:
-        """
-        If files_found is not empty, returns True and allows downstream
-        tasks to run. Otherwise, returns False and skips them.
-        """
         print(f"Files found: {files_found}")
-        return len(files_found) > 0
+        return bool(files_found)
 
-    check_task = check_if_files_exist(
-        files_found=list_csv_files.output,
-    )
+    check_task = check_if_files_exist(files_found=list_csv_files.output)
 
-    # # Task 2: Create the BigQuery dataset if it does not already exist.
     create_dataset_if_not_exists = BigQueryCreateEmptyDatasetOperator(
         task_id="create_dataset_if_not_exists",
         dataset_id=BIGQUERY_DATASET,
         location=BIGQUERY_LOCATION,
-        gcp_conn_id=GCS_CONN_ID, # BQ operators use the default connection
-        exists_ok=True,  # This makes the operator idempotent
+        gcp_conn_id=GCS_CONN_ID,
+        exists_ok=True,
     )
-##axlearn-arc-testing/testing/judywu-poc/unit-tests-cpu-54c49ab-2025-07-23-15_37_57.csv
-    # Task 3: Ensure the final destination table exists with partitioning and clustering.
+
     create_final_table_if_not_exists = BigQueryCreateEmptyTableOperator(
         task_id="create_final_table_if_not_exists",
-        gcp_conn_id=GCS_CONN_ID, # BQ operators use the default connection
+        gcp_conn_id=GCS_CONN_ID,
         dataset_id=BIGQUERY_DATASET,
         table_id=BIGQUERY_FINAL_TABLE,
         schema_fields=[
@@ -119,15 +105,143 @@ with DAG(
         cluster_fields=["processor", "commit_hash"],
     )
 
-    # # check_for_new_files_with_prefix >> move_zipped_files_to_archive >> create_dataset_if_not_exists >> create_final_table_if_not_exists
+    # --- YOUR MODIFIED (AND CORRECT) METADATA TASK ---
+    @task
+    def get_gcs_metadata_with_fallback(gcs_object_paths: list, gcs_bucket: str):
+        """
+        Fetches custom metadata from a GCS object. If key metadata fields are
+        missing, it falls back to parsing the filename.
+        """
+        hook = GCSHook(gcp_conn_id=GCS_CONN_ID)
+        all_metadata = []
+        for path in gcs_object_paths:
+            metadata = hook.get_metadata(bucket_name=gcs_bucket, object_name=path)
 
-    # # Task 4: Create a temporary external table pointing to the specific file found.
-    create_temp_external_table = BigQueryCreateExternalTableOperator(
+            print(f"Metadata for {path}: {metadata}")
+            now_dt = datetime.datetime.now()
+            default_timestamp_str = now_dt.strftime("%Y-%m-%d-%H:%M:%S")
+            # Check if the new metadata exists and is populated
+            if metadata is not None:
+                print(f"Found new metadata for: {path}")
+                result = {
+                    "source_logic": "metadata",
+                    "test_type": metadata.get("test-type", ""),
+                    "processor": metadata.get("processor", ""),
+                    "accelerator": metadata.get("accelerator", ""),
+                    "jax_version": metadata.get("jax-version", ""),
+                    "github_run_id": metadata.get("github-run-id", ""),
+                    "commit_hash": metadata.get("commit-hash", ""),
+                    "run_timestamp": metadata.get("run-timestamp", default_timestamp_str),
+                }
+            else:
+                # FALLBACK LOGIC: If metadata is missing, parse the filename
+                print(f"Metadata not found. Falling back to filename parsing for: {path}")
+                filename = path.split("/")[-1]
+                print(f"extracing file name: {filename}")
+
+                # Helper function to run regex and get group 1, or a default value
+                def extract(pattern, text, default=""):
+                    match = re.search(pattern, text)
+                    return match.group(1) if match else default
+
+                # Translate the BigQuery regex to Python's re module
+                test_type = extract(r"^([a-z]+-tests?)", filename)
+                processor = (
+                    extract(r"-(cpu|gpu|tpu)-", filename)
+                    if test_type == "unit-tests"
+                    else ""
+                )
+                accelerator = (
+                    extract(r"test-(.*?)-[a-f0-9]{7}-\d\.\d\.\d-", filename)
+                    if test_type == "training-test"
+                    else ""
+                )
+                jax_version = extract(r"-(\d\.\d\.\d(?:\.dev\d+)?)-", filename)
+                github_run_id = extract(
+                    r"-\d\.\d\.\d(?:\.dev\d+)?-([0-9]+)-", filename
+                )
+                commit_hash = extract(
+                    r"-([a-f0-9]{7})-\d\.\d\.\d(?:\.dev\d+)?-", filename
+                )
+
+                # Reconstruct the timestamp from the filename
+                ts_match = extract(
+                    r"(\d{4}-\d{2}-\d{2}-\d{2}[_:]\d{2}[_:]\d{2})", filename
+                )
+                formatted_ts = (
+                    ts_match.replace("_", ":") if ts_match else default_timestamp_str
+                )
+
+                result = {
+                    "source_logic": "filename",
+                    "test_type": test_type,
+                    "processor": processor,
+                    "accelerator": accelerator,
+                    "jax_version": jax_version,
+                    "github_run_id": github_run_id,
+                    "commit_hash": commit_hash,
+                    "run_timestamp": formatted_ts,
+                }
+            all_metadata.append(result)
+        return all_metadata
+
+    # --- YOUR MODIFIED (AND CORRECT) METADATA TASK CALL ---
+    fetched_metadata = get_gcs_metadata_with_fallback(
+        gcs_bucket=GCS_BUCKET, gcs_object_paths=list_csv_files.output
+    )
+
+    # --- NEW HELPER TASKS (FOR FIX 1) ---
+    @task
+    def prep_source_objects_list(files: list[str]) -> list[list[str]]:
+        """Turns ['a', 'b'] into [['a'], ['b']] for mapping source_objects."""
+        return [[f] for f in files]
+
+    @task
+    def prep_table_names(files: list[str], ts_nodash: str) -> list[dict]:
+        """
+        Generates a list of unique table names and IDs for each file,
+        using the map index to ensure uniqueness.
+        """
+        tables = []
+        for i, f in enumerate(files):
+            # Use the index 'i' to make the table name unique for each mapped task
+            short_name = f"temp_external_test_runs_{ts_nodash}_{i}"
+            tables.append(
+                {
+                    "short_name": short_name,
+                    "full_id": f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{short_name}",
+                }
+            )
+        return tables
+
+    @task
+    def combine_inputs_for_bq(meta_list: list, table_names_list: list[dict]):
+        """
+        Combines metadata and table names into a single list for the
+        build_bq_load_config_task, as it can only map over one input.
+        """
+        return [
+            {"meta": meta, "table_info": table_info}
+            for meta, table_info in zip(meta_list, table_names_list)
+        ]
+
+    # --- NEW HELPER TASK CALLS (FOR FIX 1) ---
+    mapped_source_objects = prep_source_objects_list(list_csv_files.output)
+
+    table_names_list = prep_table_names(
+        files=list_csv_files.output, ts_nodash="{{ ts_nodash }}"
+    )
+
+    combined_bq_inputs = combine_inputs_for_bq(
+        meta_list=fetched_metadata, table_names_list=table_names_list
+    )
+
+    # --- REPLACED `create_temp_external_table` (FOR FIX 1) ---
+    # This task is now MAPPED to run once per file
+    create_temp_external_table = BigQueryCreateExternalTableOperator.partial(
         task_id="create_temp_external_table",
         gcp_conn_id=GCS_CONN_ID,
         bucket=GCS_BUCKET,
-        source_objects=list_csv_files.output,
-        destination_project_dataset_table=f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{TEMP_EXTERNAL_TABLE}",
         schema_fields=[
             {"name": "id", "type": "STRING"},
             {"name": "module", "type": "STRING"},
@@ -145,69 +259,110 @@ with DAG(
         allow_jagged_rows=True,
         allow_quoted_newlines=True,
         location="US",
+    ).expand(
+        source_objects=mapped_source_objects,
+        destination_project_dataset_table=table_names_list.map(lambda x: x["full_id"]),
     )
 
-    # # Task 5: Execute the BigQuery job to transform and insert the data.
-    transform_and_load = BigQueryInsertJobOperator(
-        task_id="transform_and_load_to_bigquery",
-        gcp_conn_id=GCS_CONN_ID,
-        configuration={
+    # --- REPLACED `build_bq_load_config_task` (FOR FIX 1) ---
+    # This task now takes the combined input and uses the UNIQUE table name
+    @task
+    def build_bq_load_config_task(combined_input: dict) -> dict:
+        """
+        Takes one combined {meta, table_info} dict
+        and returns one complete BQ job configuration dict.
+        """
+        meta = combined_input["meta"]
+        # This is now the unique table name, e.g., temp_external_test_runs_..._0
+        temp_table_name = combined_input["table_info"]["short_name"]
+
+        # Construct the query string from the metadata
+        insert_query = f"""
+        INSERT INTO `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_FINAL_TABLE}` (
+            test_id, test_type, processor, accelerator, commit_hash, jax_version, github_run_id,
+            run_timestamp, test_path, module, name, file, doc, markers,
+            status, message, duration
+        )
+        SELECT
+            GENERATE_UUID() AS test_id,
+            '{meta["test_type"]}' AS test_type,
+            '{meta["processor"]}' AS processor,
+            '{meta["accelerator"]}' AS accelerator,
+            '{meta["commit_hash"]}' AS commit_hash,
+            '{meta["jax_version"]}' AS jax_version,
+            CONCAT('{GITHUB_RUN_LINK_PREFIX}', '{meta["github_run_id"]}') AS github_run_id,
+            PARSE_TIMESTAMP('%Y-%m-%d-%H:%M:%S', '{meta["run_timestamp"]}') AS run_timestamp,
+            csv.id AS test_path,
+            csv.module,
+            csv.name,
+            csv.file,
+            csv.doc,
+            csv.markers,
+            csv.status,
+            csv.message,
+            csv.duration
+        FROM
+        -- This now uses the UNIQUE temp table name
+        `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{temp_table_name}` AS csv;
+        """
+
+        # Return the complete configuration dictionary
+        return {
             "query": {
-                "query": f"""
-                  INSERT INTO `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_FINAL_TABLE}` (
-                      test_id, test_type, processor, accelerator, commit_hash, jax_version, github_run_id,
-                      run_timestamp, test_path, module, name, file, doc, markers,
-                      status, message, duration
-                  )
-                  SELECT
-                      GENERATE_UUID() AS test_id,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'^([a-z]+-tests?)'), '') AS test_type,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(cpu|gpu|tpu)-'), '') AS processor,
-                      CASE
-                        WHEN REGEXP_CONTAINS(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(cpu|gpu|tpu)-')
-                        THEN ''
-                        ELSE COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'test-(.*?)-[a-f0-9]{{7}}-\d\.\d\.\d-'), '')
-                      END AS accelerator,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-([a-f0-9]{{7}})-\d\.\d\.\d-'), '') AS commit_hash,
-                      COALESCE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-(\d\.\d\.\d)-'), '') AS jax_version,
-                      COALESCE(CONCAT('{GITHUB_RUN_LINK}', REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'-\d\.\d\.\d-([0-9]+)-')), '') AS github_run_id,
-                      PARSE_TIMESTAMP('%Y-%m-%d-%H:%M:%S', REPLACE(REGEXP_EXTRACT(SPLIT(_FILE_NAME, '/')[SAFE_ORDINAL(ARRAY_LENGTH(SPLIT(_FILE_NAME, '/')))], r'(\\d{{4}}-\\d{{2}}-\\d{{2}}-\\d{{2}}[_:]\\d{{2}}[_:]\\d{{2}})'), '_', ':')) AS run_timestamp,
-                      csv.id AS test_path,
-                      csv.module,
-                      csv.name,
-                      csv.file,
-                      csv.doc,
-                      csv.markers,
-                      csv.status,
-                      csv.message,
-                      csv.duration
-                  FROM
-                `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{TEMP_EXTERNAL_TABLE}` AS csv;
-                """,
+                "query": insert_query,
                 "useLegacySql": False,
             }
-        },
+        }
+
+    # --- REPLACED `list_of_bq_configs` CALL (FOR FIX 1) ---
+    # This now maps over the combined input
+    list_of_bq_configs = build_bq_load_config_task.expand(
+        combined_input=combined_bq_inputs
     )
 
-    # Task 6: Clean up by deleting the temporary external table.
-    delete_temp_table = BigQueryDeleteTableOperator(
-        task_id="delete_temp_external_table",
+    # This task is correct and maps over the list of configs
+    transform_and_load = BigQueryInsertJobOperator.partial(
+        task_id="transform_and_load_to_bigquery",
         gcp_conn_id=GCS_CONN_ID,
-        deletion_dataset_table=f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{TEMP_EXTERNAL_TABLE}",
+    ).expand(configuration=list_of_bq_configs)
+
+    # --- REPLACED `delete_temp_table` (FOR FIX 1) ---
+    # This task is now MAPPED to delete all the unique temp tables
+    delete_temp_table = BigQueryDeleteTableOperator.partial(
+        task_id="delete_temp_external_table", gcp_conn_id=GCS_CONN_ID
+    ).expand(
+        deletion_dataset_table=table_names_list.map(lambda x: x["full_id"])
     )
 
-    # Task 7: Delete all processed csv files
     delete_processed_csv_files = GCSDeleteObjectsOperator(
         task_id="delete_processed_csv_files",
         bucket_name=GCS_BUCKET,
         objects=list_csv_files.output,
         gcp_conn_id=GCS_CONN_ID,
     )
+    # --- REPLACED DEPENDENCIES (FOR FIX 1) ---
+    check_task >> [create_dataset_if_not_exists, create_final_table_if_not_exists]
 
-    # --- Define Task Dependencies ---
-    list_csv_files >> check_task >> create_dataset_if_not_exists >> create_final_table_if_not_exists
-    list_csv_files >> check_task>> create_temp_external_table
+    # These all branch from check_task and are based on the file list
+    check_task >> fetched_metadata
+    check_task >> mapped_source_objects
+    check_task >> table_names_list
 
-    [create_final_table_if_not_exists, create_temp_external_table] >> transform_and_load
+    # The BQ config builder needs both metadata and table names
+    [fetched_metadata, table_names_list] >> combined_bq_inputs
 
-    transform_and_load >> [delete_temp_table, delete_processed_csv_files]
+    # The external table creation needs the source objects and table names
+    [mapped_source_objects, table_names_list] >> create_temp_external_table
+
+    # The BQ config builder must wait for the temp tables to be created
+    # and the final table to exist.
+    [
+        create_final_table_if_not_exists,
+        create_temp_external_table,
+        combined_bq_inputs,
+    ] >> list_of_bq_configs
+
+    list_of_bq_configs >> transform_and_load
+
+    # Clean up the temp tables
+    transform_and_load >> delete_temp_table >> delete_processed_csv_files
