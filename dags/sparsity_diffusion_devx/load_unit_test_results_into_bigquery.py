@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime
 import re
+from operator import itemgetter
 
 from airflow.models.dag import DAG
 from airflow.decorators import task
@@ -38,13 +39,11 @@ GCP_PROJECT_ID = "tpu-prod-env-one-vm"
 GCS_BUCKET = "axlearn-arc-testing"
 GCS_SOURCE_FOLDER = "testing/results/"  ##change here for testing
 BIGQUERY_DATASET = "axlearn_arc_testing"
-BIGQUERY_FINAL_TABLE = "axlearn_test_results"  ##change here for testing
+BIGQUERY_FINAL_TABLE = "axlearn_test_results"  ##change here for testing + _jwu_test
 GCS_CONN_ID = "gcs_external_project_conn"
 BIGQUERY_LOCATION = "US"
 GITHUB_RUN_LINK_PREFIX = "https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
 
-# This variable is no longer used by the mapped tasks
-# TEMP_EXTERNAL_TABLE = "temp_external_test_runs_{{ ts_nodash }}"
 
 with DAG(
     dag_id="gcs_metadata_to_bigquery_dynamic",
@@ -105,7 +104,6 @@ with DAG(
         cluster_fields=["processor", "commit_hash"],
     )
 
-    # --- YOUR MODIFIED (AND CORRECT) METADATA TASK ---
     @task
     def get_gcs_metadata_with_fallback(gcs_object_paths: list, gcs_bucket: str):
         """
@@ -125,6 +123,7 @@ with DAG(
                 print(f"Found new metadata for: {path}")
                 result = {
                     "source_logic": "metadata",
+                    "file_name": path,
                     "test_type": metadata.get("test-type", ""),
                     "processor": metadata.get("processor", ""),
                     "accelerator": metadata.get("accelerator", ""),
@@ -174,6 +173,7 @@ with DAG(
 
                 result = {
                     "source_logic": "filename",
+                    "file_name": path,
                     "test_type": test_type,
                     "processor": processor,
                     "accelerator": accelerator,
@@ -185,12 +185,10 @@ with DAG(
             all_metadata.append(result)
         return all_metadata
 
-    # --- YOUR MODIFIED (AND CORRECT) METADATA TASK CALL ---
     fetched_metadata = get_gcs_metadata_with_fallback(
         gcs_bucket=GCS_BUCKET, gcs_object_paths=list_csv_files.output
     )
 
-    # --- NEW HELPER TASKS (FOR FIX 1) ---
     @task
     def prep_source_objects_list(files: list[str]) -> list[list[str]]:
         """Turns ['a', 'b'] into [['a'], ['b']] for mapping source_objects."""
@@ -210,6 +208,7 @@ with DAG(
                 {
                     "short_name": short_name,
                     "full_id": f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{short_name}",
+                    "file_name": f,
                 }
             )
         return tables
@@ -217,15 +216,36 @@ with DAG(
     @task
     def combine_inputs_for_bq(meta_list: list, table_names_list: list[dict]):
         """
-        Combines metadata and table names into a single list for the
-        build_bq_load_config_task, as it can only map over one input.
+        Combines metadata and table names into a single list, filters to ensure
+        file names match, and then sorts the list by timestamp for reliable mapping.
         """
-        return [
-            {"meta": meta, "table_info": table_info}
-            for meta, table_info in zip(meta_list, table_names_list)
-        ]
+        combined_list = []
 
-    # --- NEW HELPER TASK CALLS (FOR FIX 1) ---
+        # 1. Combine and Filter (Explicit Coupling Check)
+        for meta, table_info in zip(meta_list, table_names_list):
+            # Assuming you've already added file_name to both meta and table_info in upstream tasks
+            if meta.get("file_name") == table_info.get("file_name"):
+                combined_list.append({
+                    "meta": meta,
+                    "table_info": table_info
+                })
+            else:
+                # Log a warning if a mismatch occurs
+                print(f"WARNING: File mismatch found. Skipping: {meta.get('file_name')} != {table_info.get('file_name')}")
+
+        sorted_combined_list = sorted(
+            combined_list,
+            key=lambda item: item["meta"]["run_timestamp"]
+        )
+        file_names = [x["table_info"]["file_name"] for x in sorted_combined_list]
+        full_ids = [x["table_info"]["full_id"] for x in sorted_combined_list]
+
+        # Print the resulting lists
+        print(f"Sorted combined list file names: {file_names}")
+        print(f"Sorted combined list full ids: {full_ids}")
+        return sorted_combined_list
+
+
     mapped_source_objects = prep_source_objects_list(list_csv_files.output)
 
     table_names_list = prep_table_names(
@@ -236,8 +256,23 @@ with DAG(
         meta_list=fetched_metadata, table_names_list=table_names_list
     )
 
-    # --- REPLACED `create_temp_external_table` (FOR FIX 1) ---
-    # This task is now MAPPED to run once per file
+    @task
+    def prep_mapped_bq_inputs(combined_inputs: list) -> list[dict]:
+        """
+        Takes the combined list and extracts only the specific arguments
+        needed for the BigQueryCreateExternalTableOperator.
+        """
+        return [
+            {
+                "source_objects": [x["table_info"]["file_name"]], # CRITICAL: Re-wrap the file name in a list
+                "destination_project_dataset_table": x["table_info"]["full_id"],
+            }
+            for x in combined_inputs
+        ]
+
+
+    bq_mapped_configs = prep_mapped_bq_inputs(combined_inputs=combined_bq_inputs)
+
     create_temp_external_table = BigQueryCreateExternalTableOperator.partial(
         task_id="create_temp_external_table",
         gcp_conn_id=GCS_CONN_ID,
@@ -259,13 +294,10 @@ with DAG(
         allow_jagged_rows=True,
         allow_quoted_newlines=True,
         location="US",
-    ).expand(
-        source_objects=mapped_source_objects,
-        destination_project_dataset_table=table_names_list.map(lambda x: x["full_id"]),
+    ).expand_kwargs(
+        bq_mapped_configs
     )
 
-    # --- REPLACED `build_bq_load_config_task` (FOR FIX 1) ---
-    # This task now takes the combined input and uses the UNIQUE table name
     @task
     def build_bq_load_config_task(combined_input: dict) -> dict:
         """
@@ -314,55 +346,67 @@ with DAG(
             }
         }
 
-    # --- REPLACED `list_of_bq_configs` CALL (FOR FIX 1) ---
-    # This now maps over the combined input
     list_of_bq_configs = build_bq_load_config_task.expand(
         combined_input=combined_bq_inputs
     )
 
-    # This task is correct and maps over the list of configs
     transform_and_load = BigQueryInsertJobOperator.partial(
         task_id="transform_and_load_to_bigquery",
         gcp_conn_id=GCS_CONN_ID,
     ).expand(configuration=list_of_bq_configs)
 
-    # --- REPLACED `delete_temp_table` (FOR FIX 1) ---
-    # This task is now MAPPED to delete all the unique temp tables
+
     delete_temp_table = BigQueryDeleteTableOperator.partial(
         task_id="delete_temp_external_table", gcp_conn_id=GCS_CONN_ID
     ).expand(
         deletion_dataset_table=table_names_list.map(lambda x: x["full_id"])
     )
 
-    delete_processed_csv_files = GCSDeleteObjectsOperator(
-        task_id="delete_processed_csv_files",
+    @task(max_active_tis_per_dag=32) # Set a high limit to allow parallel deletions
+    def delete_gcs_file(file_path: str, bucket_name: str, gcp_conn_id: str):
+        """Deletes a single GCS object using the GCSHook for reliability."""
+        if not file_path:
+            print("WARNING: Received an empty file path. Skipping deletion.")
+            return
+
+        # Initialize hook inside the task for reliability
+        hook = GCSHook(gcp_conn_id=gcp_conn_id)
+        print(f"Attempting to delete GCS object: {bucket_name}/{file_path}")
+
+        try:
+            # Use the hook's delete method to remove the single object
+            hook.delete(bucket_name=bucket_name, object_name=file_path)
+            print(f"Successfully deleted: {file_path}")
+        except Exception as e:
+            # Catch NotFound errors specifically, in case a file was already deleted
+            if "No such object" in str(e):
+                print(f"Warning: File {file_path} not found (already deleted or truncated). Continuing.")
+            else:
+                # Re-raise other errors
+                raise e
+
+    # The list of file paths to delete is extracted from combined_bq_inputs
+    files_to_delete_list = combined_bq_inputs.map(lambda x: x["table_info"]["file_name"])
+
+    # The deletion task is mapped over the clean list of paths
+    delete_processed_csv_files = delete_gcs_file.partial(
         bucket_name=GCS_BUCKET,
-        objects=list_csv_files.output,
         gcp_conn_id=GCS_CONN_ID,
+    ).expand(
+        file_path=files_to_delete_list,
     )
-    # --- REPLACED DEPENDENCIES (FOR FIX 1) ---
+
     check_task >> [create_dataset_if_not_exists, create_final_table_if_not_exists]
+    check_task >> [fetched_metadata, table_names_list]
 
-    # These all branch from check_task and are based on the file list
-    check_task >> fetched_metadata
-    check_task >> mapped_source_objects
-    check_task >> table_names_list
-
-    # The BQ config builder needs both metadata and table names
     [fetched_metadata, table_names_list] >> combined_bq_inputs
 
-    # The external table creation needs the source objects and table names
-    [mapped_source_objects, table_names_list] >> create_temp_external_table
+    combined_bq_inputs >> [bq_mapped_configs, list_of_bq_configs]
 
-    # The BQ config builder must wait for the temp tables to be created
-    # and the final table to exist.
-    [
-        create_final_table_if_not_exists,
-        create_temp_external_table,
-        combined_bq_inputs,
-    ] >> list_of_bq_configs
+    bq_mapped_configs >> create_temp_external_table
 
-    list_of_bq_configs >> transform_and_load
+    [create_final_table_if_not_exists, create_temp_external_table] >> transform_and_load
 
-    # Clean up the temp tables
-    transform_and_load >> delete_temp_table >> delete_processed_csv_files
+    transform_and_load >> delete_temp_table
+
+    transform_and_load >> delete_processed_csv_files
