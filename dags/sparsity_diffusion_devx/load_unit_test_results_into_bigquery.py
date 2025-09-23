@@ -37,9 +37,9 @@ from airflow.providers.google.cloud.operators.gcs import (
 # --- Configuration Variables ---
 GCP_PROJECT_ID = "tpu-prod-env-one-vm"
 GCS_BUCKET = "axlearn-arc-testing"
-GCS_SOURCE_FOLDER = "testing/results/"  ##change here for testing
+GCS_SOURCE_FOLDER = "testing/judyzwu_poc/"  ##change here for testing
 BIGQUERY_DATASET = "axlearn_arc_testing"
-BIGQUERY_FINAL_TABLE = "axlearn_test_results"  ##change here for testing + _jwu_test
+BIGQUERY_FINAL_TABLE = "axlearn_test_results_jwu_test"  ##change here for testing + _jwu_test
 GCS_CONN_ID = "gcs_external_project_conn"
 BIGQUERY_LOCATION = "US"
 GITHUB_RUN_LINK_PREFIX = "https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
@@ -143,25 +143,47 @@ with DAG(
                     match = re.search(pattern, text)
                     return match.group(1) if match else default
 
-                # Translate the BigQuery regex to Python's re module
-                test_type = extract(r"^([a-z]+-tests?)", filename)
+                # --- CORRECTED REGEX LOGIC ---
+
+                # Pattern to CAPTURE the JAX version (has outer parens)
+                JAX_VERSION_CAPTURE_PATTERN = r"(\d\.\d\.\d(?:\.dev\d+)?)"
+                # Pattern to MATCH the JAX version (no outer parens, for anchoring)
+                JAX_VERSION_MATCH_PATTERN = r"\d\.\d\.\d(?:\.dev\d+)?"
+
+                # CORRECTED: This regex now captures the full test name up to the commit hash
+                # e.g., "training-test-v6e_4x4_1" or "unit-tests-gpu"
+                test_type = extract(r"^(.+?)-[a-f0-9]{7}-", filename)
+
+                # CORRECTED: Check if "unit-tests" is in the new, full test_type
                 processor = (
                     extract(r"-(cpu|gpu|tpu)-", filename)
-                    if test_type == "unit-tests"
+                    if "unit-tests" in test_type
                     else ""
                 )
+
+                # CORRECTED: Check if "training-test" is in the new test_type
+                # and use a simpler regex to get the accelerator part
                 accelerator = (
-                    extract(r"test-(.*?)-[a-f0-9]{7}-\d\.\d\.\d-", filename)
-                    if test_type == "training-test"
+                    extract(r"^training-test-(.*?)-[a-f0-9]{7}-", filename)
+                    if "training-test" in test_type
                     else ""
                 )
-                jax_version = extract(r"-(\d\.\d\.\d(?:\.dev\d+)?)-", filename)
+
+                # CORRECTED: Uses the CAPTURE pattern
+                jax_version = extract(r"-" + JAX_VERSION_CAPTURE_PATTERN + r"-", filename)
+
+                # CORRECTED: Uses the MATCH pattern for anchoring
+                # This ensures "([0-9]+)" is now Group 1
                 github_run_id = extract(
-                    r"-\d\.\d\.\d(?:\.dev\d+)?-([0-9]+)-", filename
+                    r"-" + JAX_VERSION_MATCH_PATTERN + r"-([0-9]+)-", filename
                 )
+
+                # CORRECTED: Uses the MATCH pattern for anchoring for robustness
                 commit_hash = extract(
-                    r"-([a-f0-9]{7})-\d\.\d\.\d(?:\.dev\d+)?-", filename
+                    r"-([a-f0-9]{7})-" + JAX_VERSION_MATCH_PATTERN + r"-", filename
                 )
+
+                # --- END OF CORRECTIONS ---
 
                 # Reconstruct the timestamp from the filename
                 ts_match = extract(
