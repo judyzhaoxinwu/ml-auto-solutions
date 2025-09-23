@@ -37,9 +37,9 @@ from airflow.providers.google.cloud.operators.gcs import (
 # --- Configuration Variables ---
 GCP_PROJECT_ID = "tpu-prod-env-one-vm"
 GCS_BUCKET = "axlearn-arc-testing"
-GCS_SOURCE_FOLDER = "testing/judyzwu_poc/"  ##change here for testing
+GCS_SOURCE_FOLDER = "testing/results/"  ##change here for testing
 BIGQUERY_DATASET = "axlearn_arc_testing"
-BIGQUERY_FINAL_TABLE = "axlearn_test_results_jwu_test"  ##change here for testing + _jwu_test
+BIGQUERY_FINAL_TABLE = "axlearn_test_results"  ##change here for testing + _jwu_test
 GCS_CONN_ID = "gcs_external_project_conn"
 BIGQUERY_LOCATION = "US"
 GITHUB_RUN_LINK_PREFIX = "https://github.com/Borklet-Labs/axlearn-arc/actions/runs/"
@@ -150,19 +150,17 @@ with DAG(
                 # Pattern to MATCH the JAX version (no outer parens, for anchoring)
                 JAX_VERSION_MATCH_PATTERN = r"\d\.\d\.\d(?:\.dev\d+)?"
 
-                # CORRECTED: This regex now captures the full test name up to the commit hash
-                # e.g., "training-test-v6e_4x4_1" or "unit-tests-gpu"
-                test_type = extract(r"^(.+?)-[a-f0-9]{7}-", filename)
+                # CORRECTED: This regex now captures only the exact string you want
+                test_type = extract(r"^(unit-tests|training-test)", filename)
 
-                # CORRECTED: Check if "unit-tests" is in the new, full test_type
+                # This logic is still correct and will work with the new test_type
                 processor = (
                     extract(r"-(cpu|gpu|tpu)-", filename)
                     if "unit-tests" in test_type
                     else ""
                 )
 
-                # CORRECTED: Check if "training-test" is in the new test_type
-                # and use a simpler regex to get the accelerator part
+                # This logic is also still correct
                 accelerator = (
                     extract(r"^training-test-(.*?)-[a-f0-9]{7}-", filename)
                     if "training-test" in test_type
