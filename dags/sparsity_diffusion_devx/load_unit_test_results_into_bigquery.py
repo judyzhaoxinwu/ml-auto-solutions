@@ -23,8 +23,7 @@ from airflow.providers.google.cloud.hooks.gcs import GCSHook
 
 from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryCreateEmptyDatasetOperator,
-    BigQueryCreateEmptyTableOperator,
-    BigQueryCreateExternalTableOperator,
+    BigQueryCreateTableOperator,
     BigQueryDeleteTableOperator,
     BigQueryInsertJobOperator,
 )
@@ -76,32 +75,43 @@ with DAG(
         exists_ok=True,
     )
 
-    create_final_table_if_not_exists = BigQueryCreateEmptyTableOperator(
+    create_final_table_if_not_exists = BigQueryCreateTableOperator(
         task_id="create_final_table_if_not_exists",
         gcp_conn_id=GCS_CONN_ID,
         dataset_id=BIGQUERY_DATASET,
         table_id=BIGQUERY_FINAL_TABLE,
-        schema_fields=[
-            {"name": "test_id", "type": "STRING", "mode": "REQUIRED"},
-            {"name": "test_type", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "processor", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "accelerator", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "jax_version", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "github_run_id", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "commit_hash", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "run_timestamp", "type": "TIMESTAMP", "mode": "NULLABLE"},
-            {"name": "test_path", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "module", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "name", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "file", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "doc", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "markers", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "status", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "message", "type": "STRING", "mode": "NULLABLE"},
-            {"name": "duration", "type": "FLOAT64", "mode": "NULLABLE"},
-        ],
-        time_partitioning={"type": "DAY", "field": "run_timestamp"},
-        cluster_fields=["processor", "commit_hash"],
+        table_resource={
+            "tableReference": {
+                "projectId": GCP_PROJECT_ID,
+                "datasetId": BIGQUERY_DATASET,
+                "tableId": BIGQUERY_FINAL_TABLE,
+            },
+            "schema": {
+                "fields": [
+                    {"name": "test_id", "type": "STRING", "mode": "REQUIRED"},
+                    {"name": "test_type", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "processor", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "accelerator", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "jax_version", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "github_run_id", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "commit_hash", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "run_timestamp", "type": "TIMESTAMP", "mode": "NULLABLE"},
+                    {"name": "test_path", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "module", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "name", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "file", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "doc", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "markers", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "status", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "message", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "duration", "type": "FLOAT64", "mode": "NULLABLE"},
+                    {"name": "pw_proxy_image", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "pw_server_image", "type": "STRING", "mode": "NULLABLE"},
+                ]
+            },
+            "timePartitioning": {"type": "DAY", "field": "run_timestamp"},
+            "clustering": {"fields": ["processor", "commit_hash"]},
+        },
     )
 
     @task
@@ -131,6 +141,8 @@ with DAG(
                     "github_run_id": metadata.get("github-run-id", ""),
                     "commit_hash": metadata.get("commit-hash", ""),
                     "run_timestamp": metadata.get("run-timestamp", default_timestamp_str),
+                    "pw_proxy_image": metadata.get("pw-proxy-image", ""),
+                    "pw_server_image": metadata.get("pw-server-image", ""),
                 }
             else:
                 # FALLBACK LOGIC: If metadata is missing, parse the filename
@@ -151,7 +163,7 @@ with DAG(
                 JAX_VERSION_MATCH_PATTERN = r"\d\.\d\.\d(?:\.dev\d+)?"
 
                 # CORRECTED: This regex now captures only the exact string you want
-                test_type = extract(r"^(unit-tests|training-test)", filename)
+                test_type = extract(r"^(unit-tests|training-test|pw-training-test)", filename)
 
                 # This logic is still correct and will work with the new test_type
                 processor = (
@@ -162,8 +174,8 @@ with DAG(
 
                 # This logic is also still correct
                 accelerator = (
-                    extract(r"^training-test-(.*?)-[a-f0-9]{7}-", filename)
-                    if "training-test" in test_type
+                    extract(f"^{test_type}-(.*?)-[a-f0-9]{7}-", filename)
+                    if test_type and "training-test" in test_type
                     else ""
                 )
 
@@ -201,6 +213,8 @@ with DAG(
                     "github_run_id": github_run_id,
                     "commit_hash": commit_hash,
                     "run_timestamp": formatted_ts,
+                    "pw_proxy_image": "",
+                    "pw_server_image": "",
                 }
             all_metadata.append(result)
         return all_metadata
@@ -280,12 +294,41 @@ with DAG(
     def prep_mapped_bq_inputs(combined_inputs: list) -> list[dict]:
         """
         Takes the combined list and extracts only the specific arguments
-        needed for the BigQueryCreateExternalTableOperator.
+        needed for the BigQueryCreateTableOperator.
         """
         return [
             {
-                "source_objects": [x["table_info"]["file_name"]], # CRITICAL: Re-wrap the file name in a list
-                "destination_project_dataset_table": x["table_info"]["full_id"],
+                "table_id": x["table_info"]["full_id"],
+                "table_resource": {
+                    "tableReference": {
+                        "projectId": GCP_PROJECT_ID,
+                        "datasetId": BIGQUERY_DATASET,
+                        "tableId": x["table_info"]["short_name"],
+                    },
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": "STRING"},
+                            {"name": "module", "type": "STRING"},
+                            {"name": "name", "type": "STRING"},
+                            {"name": "file", "type": "STRING"},
+                            {"name": "doc", "type": "STRING"},
+                            {"name": "markers", "type": "STRING"},
+                            {"name": "status", "type": "STRING"},
+                            {"name": "message", "type": "STRING"},
+                            {"name": "duration", "type": "FLOAT64"},
+                        ]
+                    },
+                    "externalDataConfiguration": {
+                        "sourceUris": [f"gs://{GCS_BUCKET}/{x['table_info']['file_name']}"],
+                        "sourceFormat": "CSV",
+                        "csvOptions": {
+                            "skipLeadingRows": 1,
+                            "allowJaggedRows": True,
+                            "allowQuotedNewlines": True,
+                        },
+                        "maxBadRecords": 100000,
+                    }
+                }
             }
             for x in combined_inputs
         ]
@@ -293,27 +336,10 @@ with DAG(
 
     bq_mapped_configs = prep_mapped_bq_inputs(combined_inputs=combined_bq_inputs)
 
-    create_temp_external_table = BigQueryCreateExternalTableOperator.partial(
+    create_temp_external_table = BigQueryCreateTableOperator.partial(
         task_id="create_temp_external_table",
         gcp_conn_id=GCS_CONN_ID,
-        bucket=GCS_BUCKET,
-        schema_fields=[
-            {"name": "id", "type": "STRING"},
-            {"name": "module", "type": "STRING"},
-            {"name": "name", "type": "STRING"},
-            {"name": "file", "type": "STRING"},
-            {"name": "doc", "type": "STRING"},
-            {"name": "markers", "type": "STRING"},
-            {"name": "status", "type": "STRING"},
-            {"name": "message", "type": "STRING"},
-            {"name": "duration", "type": "FLOAT64"},
-        ],
-        source_format="CSV",
-        skip_leading_rows=1,
-        max_bad_records=100000,
-        allow_jagged_rows=True,
-        allow_quoted_newlines=True,
-        location="US",
+        dataset_id=BIGQUERY_DATASET,
     ).expand_kwargs(
         bq_mapped_configs
     )
@@ -333,7 +359,7 @@ with DAG(
         INSERT INTO `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_FINAL_TABLE}` (
             test_id, test_type, processor, accelerator, commit_hash, jax_version, github_run_id,
             run_timestamp, test_path, module, name, file, doc, markers,
-            status, message, duration
+            status, message, duration, pw_proxy_image, pw_server_image
         )
         SELECT
             GENERATE_UUID() AS test_id,
@@ -352,7 +378,9 @@ with DAG(
             csv.markers,
             csv.status,
             csv.message,
-            csv.duration
+            csv.duration,
+            '{meta["pw_proxy_image"]}' AS pw_proxy_image,
+            '{meta["pw_server_image"]}' AS pw_server_image
         FROM
         -- This now uses the UNIQUE temp table name
         `{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{temp_table_name}` AS csv;
